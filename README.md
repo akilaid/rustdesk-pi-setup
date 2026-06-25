@@ -76,7 +76,7 @@ password blank to auto-generate a strong one — it's printed at the end).
 | 2 | **LightDM auto-login** of your user into the X11 session on `:0`. |
 | 3 | Disables **screen blanking / DPMS** so the remote view never blacks out. |
 | 4 | Installs the official **RustDesk `.deb`** matched to the CPU (`arm64`→aarch64, `armhf`→armv7) if missing. |
-| 5 | Forces a **virtual HDMI display** on every port via `cmdline.txt` (headless KMS needs this — without a monitor there's otherwise no framebuffer to capture). |
+| 5 | Forces a **virtual HDMI display** on every port via `cmdline.txt`, **plus a fake 1080p EDID** in `/lib/firmware/edid/` so the desktop comes up at true **1920×1080 (16:9)** with no monitor — no "square screen," no plug-a-monitor-in-then-unplug trick. |
 | 6 | Writes the **self-hosted server** config (rendezvous / relay / key) for the root service. |
 | 7 | Sets the **permanent unattended password** and enables the service on boot. |
 | 8 | Offers to **reboot** (required to apply the display, auto-login, and X11 switch). |
@@ -121,6 +121,8 @@ sudo RENDEZVOUS_HOST=203.0.113.10 \
 | `API_SERVER` | *(empty)* | Optional, e.g. `https://host` (web console / address book only) |
 | `HDMI_MODE` | `1920x1080@60D` | Forced virtual mode (trailing `D` = force connector on) |
 | `HDMI_CONNECTOR` | *(empty = all HDMI ports)* | Pin a single connector, e.g. `HDMI-A-1` |
+| `FAKE_EDID` | `yes` | Write a fake 1080p EDID so a headless Pi boots at true 16:9 (fixes the "square screen") |
+| `EDID_FILE` | `rustdesk-1080p.bin` | EDID filename under `/lib/firmware/edid/`; point at a captured EDID to override |
 | `PURGE_SCREENSAVERS` | `yes` | Remove `light-locker` / `xfce4-screensaver` if present |
 | `ADD_ORDERING_DROPIN` | `yes` | Start the service after the display manager |
 | `AUTO_REBOOT` | `ask` | `yes` / `no` / `ask` |

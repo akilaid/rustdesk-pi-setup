@@ -16,7 +16,8 @@
 #   3. LightDM auto-login of the primary user into the X11 session on :0
 #   4. Disables screen blanking / DPMS so the remote view never blacks out
 #   5. Installs the official RustDesk .deb (matched to the CPU) if absent
-#   6. Forces a virtual HDMI display on every port (headless KMS) via cmdline.txt
+#   6. Forces a virtual HDMI display on every port (headless KMS) + writes a fake 1080p
+#      EDID so the desktop comes up at true 16:9 with no monitor (no "square screen")
 #   7. Seeds the self-hosted server config + permanent password for the ROOT service
 #   8. Enables the service and offers to reboot
 #
@@ -42,6 +43,8 @@ API_SERVER="${API_SERVER:-}"                    # optional, e.g. https://host ; 
 # Headless virtual display
 HDMI_MODE="${HDMI_MODE:-1920x1080@60D}"         # trailing 'D' forces the connector ON with no monitor
 HDMI_CONNECTOR="${HDMI_CONNECTOR:-}"            # optional: pin ONE connector; empty = force ALL HDMI ports
+FAKE_EDID="${FAKE_EDID:-yes}"                   # write a fake 1080p EDID so a headless Pi boots at true 16:9
+EDID_FILE="${EDID_FILE:-rustdesk-1080p.bin}"    # EDID filename under /lib/firmware/edid/ (point at a captured one to override)
 
 # Behaviour toggles
 PURGE_SCREENSAVERS="${PURGE_SCREENSAVERS:-yes}" # purge light-locker + xfce4-screensaver if present
@@ -183,6 +186,11 @@ log "rustdesk binary: $(command -v rustdesk)  ($(rustdesk --version 2>/dev/null 
 systemctl list-unit-files | grep -q '^rustdesk\.service' || \
   warn "rustdesk.service unit not found — if you installed via Flatpak/AppImage, switch to the .deb."
 
+# Pre-validated generic 1080p EDID (128-byte EDID 1.3; preferred DTD = 1920x1080@60,
+# 148.5 MHz; checksum OK). Decoded to /lib/firmware/edid/ so a headless Pi advertises a
+# real 1080p monitor and the desktop never falls back to a "square" 4:3 mode.
+EDID_B64='AP///////wAx2AAAAAAAAAAhAQOANR54Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBAjqAGHE4LUBYLEUAEyohAAAeAAAA/QAySx5TDwAKICAgICAgAAAA/ABSdXN0RGVzawogICAgAAAAEAAgICAgICAgICAgICAgAOE='
+
 # ── Step 5: force a virtual display for headless KMS (every HDMI port) ─────────
 CMDLINE="/boot/firmware/cmdline.txt"
 [[ -f "$CMDLINE" ]] || CMDLINE="/boot/cmdline.txt"
@@ -208,6 +216,21 @@ if [[ -f "$CMDLINE" ]]; then
       log "Appended 'video=${c}:${HDMI_MODE}' to $CMDLINE"
     fi
   done
+  # Fake 1080p EDID: make a headless Pi report a real monitor so the desktop is true 16:9.
+  if [[ "$FAKE_EDID" == "yes" ]]; then
+    install -d -m 0755 /lib/firmware/edid
+    printf '%s' "$EDID_B64" | base64 -d > "/lib/firmware/edid/${EDID_FILE}" || die "Failed to write fake EDID"
+    chmod 0644 "/lib/firmware/edid/${EDID_FILE}"
+    if grep -q "drm.edid_firmware=" "$CMDLINE"; then
+      log "cmdline.txt already sets drm.edid_firmware — leaving as-is"
+    else
+      edid_arg="drm.edid_firmware="; sep=""
+      for c in "${conns[@]}"; do edid_arg+="${sep}${c}:edid/${EDID_FILE}"; sep=","; done
+      if [[ "$made_backup" -eq 0 ]]; then cp -a "$CMDLINE" "${CMDLINE}.bak.rustdesk" 2>/dev/null || true; made_backup=1; fi
+      sed -i "s|[[:space:]]*\$| ${edid_arg}|" "$CMDLINE"
+      log "Appended '${edid_arg}' to $CMDLINE (fake 1080p EDID)"
+    fi
+  fi
 else
   warn "Could not find cmdline.txt — skipping headless display forcing. Set 'video=' manually."
   conns=("HDMI-A-1")
@@ -267,6 +290,7 @@ cat <<EOF
    Server ............. ${RENDEZVOUS_HOST} (relay: ${RELAY_HOST})
    Auto-login user .... ${PRIMARY_USER}  (Raspberry Pi desktop, X11)
    Headless display ... ${HDMI_MODE} on: ${conns[*]}
+   Fake 1080p EDID .... ${FAKE_EDID}  (/lib/firmware/edid/${EDID_FILE})
 ────────────────────────────────────────────────────────────────────
  A REBOOT is required to apply the display, auto-login and X11 switch.
 EOF
