@@ -15,20 +15,44 @@ the same command suits a bare Lite image or a full Desktop image.
 
 ## Quick start
 
-1. Flash any Raspberry Pi OS image and boot the Pi (enable SSH if it's headless).
-2. Copy both scripts to the Pi, e.g. from your machine:
-   ```bash
-   scp setup-rustdesk-pi.sh verify-rustdesk-pi.sh <user>@<pi-ip>:~/
-   ```
-3. On the Pi:
-   ```bash
-   chmod +x setup-rustdesk-pi.sh verify-rustdesk-pi.sh
-   sudo ./setup-rustdesk-pi.sh
-   ```
-4. Answer the prompts, let it finish, and reboot when it offers.
-5. After reboot, connect from your RustDesk client using the **ID** and
-   **password** the script printed (your client must point at the same
-   self-hosted server + key).
+First, flash any Raspberry Pi OS image and boot the Pi (enable SSH if it's
+headless). Then use **one** of the methods below.
+
+### Option A — one-line install (recommended)
+
+On the Pi, or over SSH:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/akilaid/rustdesk-pi-setup/main/setup-rustdesk-pi.sh | sudo bash
+```
+
+It prompts you right in the terminal (the prompts are read from `/dev/tty`, so
+piping through `bash` works fine). Optionally grab the health-check script too:
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/akilaid/rustdesk-pi-setup/main/verify-rustdesk-pi.sh && chmod +x verify-rustdesk-pi.sh
+```
+
+### Option B — clone the repo (gets both scripts)
+
+```bash
+git clone https://github.com/akilaid/rustdesk-pi-setup.git
+cd rustdesk-pi-setup
+sudo ./setup-rustdesk-pi.sh
+```
+
+### Option C — copy from your own machine
+
+```bash
+scp setup-rustdesk-pi.sh verify-rustdesk-pi.sh <user>@<pi-ip>:~/
+ssh <user>@<pi-ip>
+chmod +x setup-rustdesk-pi.sh verify-rustdesk-pi.sh
+sudo ./setup-rustdesk-pi.sh
+```
+
+Then: answer the prompts, let it finish, and reboot when it offers. After reboot,
+connect from your RustDesk client using the **ID** and **password** the script
+printed (your client must point at the same self-hosted server + key).
 
 ### The prompts
 ```
