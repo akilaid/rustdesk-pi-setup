@@ -20,6 +20,7 @@
 #      EDID so the desktop comes up at true 16:9 with no monitor (no "square screen")
 #   7. Seeds the self-hosted server config + permanent password for the ROOT service
 #   8. Enables the service and offers to reboot
+#   (optional) Experimental hardware video decode (VAAPI) — prompted, default skip
 #
 # RUN AS:  sudo ./setup-rustdesk-pi.sh
 # Unattended (no prompts): pass values via env, e.g.
@@ -49,6 +50,7 @@ EDID_FILE="${EDID_FILE:-rustdesk-1080p.bin}"    # EDID filename under /lib/firmw
 # Behaviour toggles
 PURGE_SCREENSAVERS="${PURGE_SCREENSAVERS:-yes}" # purge light-locker + xfce4-screensaver if present
 ADD_ORDERING_DROPIN="${ADD_ORDERING_DROPIN:-yes}" # start rustdesk.service after the display manager
+ENABLE_VAAPI="${ENABLE_VAAPI:-}"                # experimental HW video decode (VAAPI); empty = ask, or set yes/no
 AUTO_REBOOT="${AUTO_REBOOT:-ask}"               # yes | no | ask
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -98,6 +100,17 @@ if [[ -z "$RUSTDESK_PASSWORD" || "$RUSTDESK_PASSWORD" == "CHANGE_ME" ]]; then
     if [[ "$p1" == "$p2" ]]; then RUSTDESK_PASSWORD="$p1"; break; else echo "  passwords do not match — try again"; fi
   done
 fi
+
+# Optional, EXPERIMENTAL hardware video decode (VAAPI) — default skip.
+if [[ -z "$ENABLE_VAAPI" ]]; then
+  if [[ -e /dev/tty ]]; then
+    read -r -p "Enable EXPERIMENTAL hardware video decode (VAAPI)? Big win on Pi 4; limited on Pi 5 (HEVC-only) [y/N]: " va <"$TTY" || va=""
+    [[ "$va" =~ ^[Yy]$ ]] && ENABLE_VAAPI=yes || ENABLE_VAAPI=no
+  else
+    ENABLE_VAAPI=no
+  fi
+fi
+[[ "$ENABLE_VAAPI" =~ ^([Yy]([Ee][Ss])?|1|[Tt][Rr][Uu][Ee])$ ]] && ENABLE_VAAPI=yes || ENABLE_VAAPI=no
 
 # ── Validate ──────────────────────────────────────────────────────────────────
 [[ -n "$RENDEZVOUS_HOST" ]] || die "Rendezvous server is required."
@@ -164,6 +177,42 @@ NoDisplay=true
 EOF
 chown "$PRIMARY_USER":"$PRIMARY_USER" "$USER_HOME/.config/autostart/disable-blank.desktop"
 log "Disabled screen blanking/DPMS (raspi-config do_blanking + autostart xset)"
+
+# ── Step 3b (optional): EXPERIMENTAL hardware video decode (VAAPI) ─────────────
+if [[ "$ENABLE_VAAPI" == "yes" ]]; then
+  log "Enabling EXPERIMENTAL hardware video decode (VAAPI)…"
+  va_need=()
+  for p in libva2 libva-drm2 vainfo mesa-va-drivers; do
+    dpkg -s "$p" &>/dev/null || va_need+=("$p")
+  done
+  if ((${#va_need[@]})); then
+    apt-get update -y
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${va_need[@]}" || warn "Some VAAPI packages failed to install — continuing"
+  fi
+  # device access for the decode hardware (/dev/dri, /dev/video*)
+  gpasswd -a "$PRIMARY_USER" video  >/dev/null 2>&1 || true
+  gpasswd -a "$PRIMARY_USER" render >/dev/null 2>&1 || true
+  # Raspberry Pi OS's chromium-browser sources /etc/chromium.d/* for extra flags.
+  install -d -m 0755 /etc/chromium.d
+  cat > /etc/chromium.d/20-rustdesk-vaapi <<'EOF'
+# Added by setup-rustdesk-pi.sh — experimental VAAPI video decode for Chromium.
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --enable-features=VaapiVideoDecoder --ignore-gpu-blocklist"
+EOF
+  log "Wrote Chromium VAAPI flags drop-in (/etc/chromium.d/20-rustdesk-vaapi)"
+  if command -v vainfo >/dev/null; then
+    echo "    --- vainfo: decode profiles THIS board actually exposes ---"
+    vainfo 2>&1 | sed 's/^/    /' | head -n 20 || true
+  fi
+  cat <<'EOF'
+    NOTE (experimental) — Pi hardware video decode is uneven:
+      • Pi 4: real H.264 hardware decode  → genuine win for browser/media video.
+      • Pi 5: HEVC-only via V4L2 (great in VLC/mpv); H.264 decodes on the CPU
+        (fine at 1080p), and stock Chromium usually stays "Video Decode: software".
+      Over RustDesk the video ENCODE is often the bottleneck anyway.
+EOF
+else
+  log "Skipping hardware video decode (VAAPI) — re-run with ENABLE_VAAPI=yes to enable."
+fi
 
 # ── Step 4: install / verify RustDesk (official .deb, matched to the CPU) ──────
 if ! command -v rustdesk &>/dev/null; then
@@ -291,6 +340,7 @@ cat <<EOF
    Auto-login user .... ${PRIMARY_USER}  (Raspberry Pi desktop, X11)
    Headless display ... ${HDMI_MODE} on: ${conns[*]}
    Fake 1080p EDID .... ${FAKE_EDID}  (/lib/firmware/edid/${EDID_FILE})
+   HW video decode .... ${ENABLE_VAAPI} (experimental — VAAPI)
 ────────────────────────────────────────────────────────────────────
  A REBOOT is required to apply the display, auto-login and X11 switch.
 EOF

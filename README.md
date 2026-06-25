@@ -126,9 +126,26 @@ sudo RENDEZVOUS_HOST=203.0.113.10 \
 | `PURGE_SCREENSAVERS` | `yes` | Remove `light-locker` / `xfce4-screensaver` if present |
 | `ADD_ORDERING_DROPIN` | `yes` | Start the service after the display manager |
 | `AUTO_REBOOT` | `ask` | `yes` / `no` / `ask` |
+| `ENABLE_VAAPI` | *(empty = ask)* | Experimental hardware video decode (VAAPI); `yes` / `no` to skip the prompt |
 
 It's **idempotent** — safe to re-run. A second run installs nothing and just
 re-asserts the configuration.
+
+### Experimental: hardware video decode (VAAPI)
+
+The setup prompts (default **no**) to enable VAAPI hardware video decode so video
+in the remote session is offloaded from the CPU. It's **experimental** because Pi
+support is uneven:
+
+- **Pi 4** has a real **H.264** hardware decoder → a genuine win for browser/media video.
+- **Pi 5** dropped H.264 hardware decode; it does **HEVC-only** (via V4L2, great in
+  VLC/mpv). H.264 decodes on the CPU — fine at 1080p — and stock Chromium usually still
+  reports "Video Decode: software".
+
+Over RustDesk the video **encode** is often the real bottleneck anyway, so treat this as
+a nice-to-have. It installs the VAAPI runtime + `vainfo`, adds you to the `video`/`render`
+groups, and writes a Chromium flags drop-in. Skip it with `ENABLE_VAAPI=no` (or just press
+Enter at the prompt); enable non-interactively with `ENABLE_VAAPI=yes`.
 
 ---
 
