@@ -1,0 +1,4 @@
+# Shell scripts must keep LF line endings so they run on Linux / Raspberry Pi.
+# Without this, a Windows checkout could introduce CRLF and break `curl | bash`
+# with: /bin/bash^M: bad interpreter.
+*.sh text eol=lf

@@ -1,0 +1,9 @@
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
+*~
+
+# Local backups produced on the Pi by the setup script
+*.bak
+*.bak.rustdesk
