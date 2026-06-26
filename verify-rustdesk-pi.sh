@@ -41,12 +41,23 @@ else
 fi
 
 echo "=== 4. Bound to the self-hosted server ==="
-SRV="$(grep -E "custom-rendezvous-server|relay-server" /root/.config/rustdesk/RustDesk2.toml 2>/dev/null | tr -d ' ' | tr '\n' ' ')"
-if [[ -n "$SRV" ]]; then pass "Config points at: $SRV"; else fail "No server config in /root/.config/rustdesk/RustDesk2.toml"; fi
+RD2=/root/.config/rustdesk/RustDesk2.toml
+SRV="$(grep -E "custom-rendezvous-server|relay-server" "$RD2" 2>/dev/null | tr -d ' ' | tr '\n' ' ')"
+if [[ -n "$SRV" ]]; then pass "Config points at: $SRV"; else fail "No custom server in $RD2 (it likely reverted to the PUBLIC rustdesk server — re-run setup)"; fi
+# The live rendezvous_server must NOT be a public rs-*.rustdesk.com host.
+if grep -qiE "rendezvous_server[[:space:]]*=[[:space:]]*'[^']*rustdesk\.com" "$RD2" 2>/dev/null; then
+  fail "RustDesk2.toml rendezvous_server is a PUBLIC rustdesk.com host — custom server not in effect (re-run setup)"
+fi
 if journalctl -u rustdesk -b 2>/dev/null | grep -qiE "rs-.*\.rustdesk\.com"; then
   fail "Logs show the PUBLIC rustdesk rendezvous — custom server not taking effect"
 else
   info "No public-server registration seen (good if your server config is correct)"
+fi
+# Permanent (unattended) password must be set, or unattended access won't work.
+if grep -q "^password = '.\+'" /root/.config/rustdesk/RustDesk.toml 2>/dev/null; then
+  pass "Permanent password is set"
+else
+  fail "Permanent password is empty in RustDesk.toml — set it with: sudo rustdesk --password '<pw>'"
 fi
 
 echo "=== 5. RustDesk identity ==="

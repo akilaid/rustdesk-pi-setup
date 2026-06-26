@@ -285,29 +285,34 @@ else
   conns=("HDMI-A-1")
 fi
 
-# ── Step 6 & 7: seed server config + permanent password for the ROOT service ──
-systemctl stop rustdesk 2>/dev/null || true
+# ── Step 6 & 7: seed server config, then (later, with the service UP) set password ──
+# CRITICAL: never invoke a `rustdesk` CLI command while the service is STOPPED.
+# With no running service, `rustdesk --password`/`--get-id` re-initialise a DEFAULT
+# config (a random public rs-*.rustdesk.com rendezvous) and overwrite RustDesk2.toml,
+# wiping the custom server we seed here — that's the "No such file or directory
+# (os error 2)" you'd see. So: stop service → write file → start service → only then
+# touch the CLI.
 ROOT_CFG_DIR="/root/.config/rustdesk"
-install -d -m 0700 "$ROOT_CFG_DIR"
-{
-  echo "rendezvous_server = '${RENDEZVOUS_HOST}:21116'"
-  echo "nat_type = 1"
-  echo "serial = 0"
-  echo ""
-  echo "[options]"
-  echo "custom-rendezvous-server = '${RENDEZVOUS_HOST}'"
-  echo "relay-server = '${RELAY_HOST}'"
-  echo "key = '${SERVER_KEY}'"
-  [[ -n "$API_SERVER" ]] && echo "api-server = '${API_SERVER}'"
-} > "$ROOT_CFG_DIR/RustDesk2.toml"
-chmod 0600 "$ROOT_CFG_DIR/RustDesk2.toml"
-log "Wrote self-hosted server config to $ROOT_CFG_DIR/RustDesk2.toml"
+write_server_config() {
+  install -d -m 0700 "$ROOT_CFG_DIR"
+  {
+    echo "rendezvous_server = '${RENDEZVOUS_HOST}:21116'"
+    echo "nat_type = 1"
+    echo "serial = 0"
+    echo ""
+    echo "[options]"
+    echo "custom-rendezvous-server = '${RENDEZVOUS_HOST}'"
+    echo "relay-server = '${RELAY_HOST}'"
+    echo "key = '${SERVER_KEY}'"
+    [[ -n "$API_SERVER" ]] && echo "api-server = '${API_SERVER}'"
+  } > "$ROOT_CFG_DIR/RustDesk2.toml"
+  chmod 0600 "$ROOT_CFG_DIR/RustDesk2.toml"
+}
 
-if timeout 15 rustdesk --password "$RUSTDESK_PASSWORD" 2>/dev/null; then
-  log "Permanent password set."
-else
-  warn "rustdesk --password deferred — will retry once the service is running (below)."
-fi
+systemctl stop rustdesk 2>/dev/null || true   # stop the .deb-autostarted instance so it can't clobber our write
+write_server_config
+log "Wrote self-hosted server config to $ROOT_CFG_DIR/RustDesk2.toml"
+# NOTE: the permanent password is set further down, AFTER the service is running.
 
 # ── Step 8: optional ordering drop-in + enable the service ────────────────────
 if [[ "$ADD_ORDERING_DROPIN" == "yes" ]]; then
@@ -325,10 +330,40 @@ fi
 systemctl daemon-reload
 systemctl enable --now rustdesk || warn "Could not enable/start rustdesk.service — check the install."
 
-# Retry the password now that the service/config is initialized, then read the ID.
-sleep 2
-timeout 15 rustdesk --password "$RUSTDESK_PASSWORD" >/dev/null 2>&1 || true
+# Wait for the service to be up (IPC socket open) BEFORE any rustdesk CLI call, so the
+# password actually lands and we never re-init a default/public config.
+for _ in $(seq 1 20); do
+  systemctl is-active --quiet rustdesk && break
+  sleep 1
+done
+sleep 2   # give the service a moment to open its IPC socket
+
+# Set the permanent password against the RUNNING service, retrying until it sticks.
+pw_set=no
+for _ in $(seq 1 10); do
+  timeout 15 rustdesk --password "$RUSTDESK_PASSWORD" >/dev/null 2>&1 || true
+  if grep -q "^password = '.\+'" "$ROOT_CFG_DIR/RustDesk.toml" 2>/dev/null; then
+    pw_set=yes; break
+  fi
+  sleep 1
+done
+if [[ "$pw_set" == "yes" ]]; then
+  log "Permanent password set."
+else
+  warn "Could not confirm the permanent password was stored. After reboot, set it with: sudo rustdesk --password '<your-password>'"
+fi
+
 RD_ID="$(timeout 20 rustdesk --get-id 2>/dev/null || true)"
+
+# Safety net: confirm the service kept our custom server. It should — only a CLI call
+# while the service is STOPPED resets it, which we now avoid — but if anything wiped it,
+# re-seed and restart so the box never silently registers to the public server.
+if ! grep -q "custom-rendezvous-server" "$ROOT_CFG_DIR/RustDesk2.toml" 2>/dev/null; then
+  warn "Custom server missing from RustDesk2.toml after start — re-seeding and restarting."
+  systemctl stop rustdesk 2>/dev/null || true
+  write_server_config
+  systemctl start rustdesk 2>/dev/null || true
+fi
 
 cat <<EOF
 

@@ -185,6 +185,12 @@ sudo rustdesk --password 'new-pass'    # change the permanent password
   took effect (`/etc/lightdm/lightdm.conf.d/50-autologin.conf`).
 - **Client can't see the Pi** → make sure your RustDesk client's network settings
   point at the **same** rendezvous/relay host and **key**.
+- **Pi shows online on the *public* server / unattended password missing** → the
+  permanent password and custom server are seeded **after** the service is running
+  (never via a `rustdesk` CLI call while it's stopped — that resets the config to a
+  public `rs-*.rustdesk.com` rendezvous). Just **re-run** the script (it's idempotent,
+  no reflash) and reboot; `verify-rustdesk-pi.sh` will FAIL loudly if the config ever
+  reverts to a public host or the password is empty.
 
 ## Rollback
 
