@@ -43,7 +43,8 @@ API_SERVER="${API_SERVER:-}"                    # optional, e.g. https://host ; 
 
 # Headless virtual display
 HDMI_MODE="${HDMI_MODE:-1920x1080@60D}"         # trailing 'D' forces the connector ON with no monitor
-HDMI_CONNECTOR="${HDMI_CONNECTOR:-}"            # optional: pin ONE connector; empty = force ALL HDMI ports
+HDMI_CONNECTOR="${HDMI_CONNECTOR:-}"            # optional: pin ONE specific connector, e.g. HDMI-A-1 (overrides the prompt)
+FORCE_ALL_HDMI="${FORCE_ALL_HDMI:-}"            # ''=ask (default 1 display), yes=force ALL HDMI ports, no=single (first port)
 FAKE_EDID="${FAKE_EDID:-yes}"                   # write a fake 1080p EDID so a headless Pi boots at true 16:9
 EDID_FILE="${EDID_FILE:-rustdesk-1080p.bin}"    # EDID filename under /lib/firmware/edid/ (point at a captured one to override)
 
@@ -78,17 +79,50 @@ DEF_USER="${SUDO_USER:-}"
 [[ -z "$DEF_USER" || "$DEF_USER" == "root" ]] && \
   DEF_USER="$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd || true)"
 
-# If something required is missing and we have no terminal, fail with guidance.
-if [[ ( -z "$RENDEZVOUS_HOST" || -z "$SERVER_KEY" || -z "$RUSTDESK_PASSWORD" ) && ! -e /dev/tty && ! -t 0 ]]; then
+# ── Re-run friendliness: detect an existing config and offer to reuse it ───────
+# Saves re-typing the server / key / password on an already-configured Pi. Only
+# kicks in when nothing was passed via env and a config already exists. The
+# RustDesk ID lives in RustDesk.toml and is never touched, so it stays the same.
+ROOT_CFG_DIR="/root/.config/rustdesk"
+RD2="$ROOT_CFG_DIR/RustDesk2.toml"
+RD1="$ROOT_CFG_DIR/RustDesk.toml"
+KEEP_PASSWORD=no
+ex_host=""; ex_relay=""; ex_key=""; ex_api=""
+if [[ -z "$RENDEZVOUS_HOST$SERVER_KEY" ]] && grep -q "custom-rendezvous-server" "$RD2" 2>/dev/null; then
+  ex_host="$(sed -n "s/^custom-rendezvous-server = '\(.*\)'.*/\1/p"  "$RD2" | head -n1)"
+  ex_relay="$(sed -n "s/^relay-server = '\(.*\)'.*/\1/p"             "$RD2" | head -n1)"
+  ex_key="$(sed -n "s/^key = '\(.*\)'.*/\1/p"                        "$RD2" | head -n1)"
+  ex_api="$(sed -n "s/^api-server = '\(.*\)'.*/\1/p"                 "$RD2" | head -n1)"
+  if grep -q "^password = '.\+'" "$RD1" 2>/dev/null; then ex_pw=yes; else ex_pw=no; fi
+  if [[ -n "$ex_host" ]]; then
+    printf '\n\033[1;36mExisting RustDesk config found:\033[0m\n'
+    printf '    server=%s  relay=%s  key=%s…  password=%s\n' \
+      "$ex_host" "${ex_relay:-$ex_host}" "${ex_key:0:12}" \
+      "$([[ "$ex_pw" == yes ]] && echo 'already set' || echo 'NOT set')"
+    reuse=Y
+    [[ -e /dev/tty ]] && { read -r -p "Reuse it and skip the prompts? [Y/n]: " reuse <"$TTY" || reuse=Y; }
+    if [[ ! "$reuse" =~ ^[Nn]$ ]]; then
+      RENDEZVOUS_HOST="$ex_host"
+      RELAY_HOST="${RELAY_HOST:-${ex_relay:-$ex_host}}"
+      SERVER_KEY="$ex_key"
+      [[ -z "$API_SERVER" && -n "$ex_api" ]] && API_SERVER="$ex_api"
+      [[ "$ex_pw" == yes ]] && KEEP_PASSWORD=yes
+      log "Reusing existing configuration (RustDesk ID and password preserved)."
+    fi
+  fi
+fi
+
+# If something required is still missing and we have no terminal, fail with guidance.
+if [[ ( -z "$RENDEZVOUS_HOST" || -z "$SERVER_KEY" || ( -z "$RUSTDESK_PASSWORD" && "$KEEP_PASSWORD" != "yes" ) ) && ! -e /dev/tty && ! -t 0 ]]; then
   die "No terminal for prompts. Pass values via env: RENDEZVOUS_HOST, SERVER_KEY, RUSTDESK_PASSWORD (and optionally PRIMARY_USER, RELAY_HOST)."
 fi
 
 ask PRIMARY_USER    "Primary desktop user to auto-login" "$DEF_USER"
-ask RENDEZVOUS_HOST "Self-hosted RustDesk server IP/host (rendezvous, hbbs)"
-ask RELAY_HOST      "Relay server IP/host (hbbr)" "$RENDEZVOUS_HOST"
-ask SERVER_KEY      "Server public key (long base64 string)"
+ask RENDEZVOUS_HOST "Self-hosted RustDesk server IP/host (rendezvous, hbbs)" "$ex_host"
+ask RELAY_HOST      "Relay server IP/host (hbbr)" "${ex_relay:-$RENDEZVOUS_HOST}"
+ask SERVER_KEY      "Server public key (long base64 string)" "$ex_key"
 
-if [[ -z "$RUSTDESK_PASSWORD" || "$RUSTDESK_PASSWORD" == "CHANGE_ME" ]]; then
+if [[ "$KEEP_PASSWORD" != "yes" && ( -z "$RUSTDESK_PASSWORD" || "$RUSTDESK_PASSWORD" == "CHANGE_ME" ) ]]; then
   while :; do
     read -rs -p "Permanent access password (blank = auto-generate): " p1 <"$TTY"; echo
     if [[ -z "$p1" ]]; then
@@ -100,6 +134,26 @@ if [[ -z "$RUSTDESK_PASSWORD" || "$RUSTDESK_PASSWORD" == "CHANGE_ME" ]]; then
     if [[ "$p1" == "$p2" ]]; then RUSTDESK_PASSWORD="$p1"; break; else echo "  passwords do not match — try again"; fi
   done
 fi
+
+# How many virtual displays to force? Default ONE (HDMI-A-1) so a real monitor on
+# HDMI-A-2 still works at its native resolution. An explicit HDMI_CONNECTOR pins one.
+if [[ -z "$HDMI_CONNECTOR" && -z "$FORCE_ALL_HDMI" ]]; then
+  if [[ -e /dev/tty ]]; then
+    cat <<'EOF'
+
+A headless Pi has no monitor, so we fake a screen for RustDesk to capture.
+Your Pi has two HDMI ports:
+  1   = force only HDMI-A-1 -> ONE 1080p screen; HDMI-A-2 stays free (plug a real
+        monitor into port 2 and it runs at its OWN native resolution).  [recommended]
+  all = force BOTH ports -> TWO 1080p screens; a monitor on either port is locked to 1080p.
+EOF
+    read -r -p "How many displays to force? [1/all] (default 1): " hd <"$TTY" || hd=""
+    [[ "$hd" =~ ^([Aa][Ll][Ll]|[Bb][Oo][Tt][Hh]|2)$ ]] && FORCE_ALL_HDMI=yes || FORCE_ALL_HDMI=no
+  else
+    FORCE_ALL_HDMI=no
+  fi
+fi
+[[ "$FORCE_ALL_HDMI" =~ ^([Yy]([Ee][Ss])?|[Aa][Ll][Ll]|[Bb][Oo][Tt][Hh]|[Tt][Rr][Uu][Ee])$ ]] && FORCE_ALL_HDMI=yes || FORCE_ALL_HDMI=no
 
 # Optional, EXPERIMENTAL hardware video decode (VAAPI) — default skip.
 if [[ -z "$ENABLE_VAAPI" ]]; then
@@ -115,7 +169,7 @@ fi
 # ── Validate ──────────────────────────────────────────────────────────────────
 [[ -n "$RENDEZVOUS_HOST" ]] || die "Rendezvous server is required."
 [[ -n "$SERVER_KEY"      ]] || die "Server public key is required."
-[[ -n "$RUSTDESK_PASSWORD" ]] || die "Password is required."
+[[ -n "$RUSTDESK_PASSWORD" || "$KEEP_PASSWORD" == "yes" ]] || die "Password is required."
 [[ -n "$RELAY_HOST"      ]] || RELAY_HOST="$RENDEZVOUS_HOST"
 id "$PRIMARY_USER" &>/dev/null || die "User '$PRIMARY_USER' does not exist. Set PRIMARY_USER correctly."
 USER_HOME="$(getent passwd "$PRIMARY_USER" | cut -d: -f6)"
@@ -240,45 +294,56 @@ systemctl list-unit-files | grep -q '^rustdesk\.service' || \
 # real 1080p monitor and the desktop never falls back to a "square" 4:3 mode.
 EDID_B64='AP///////wAx2AAAAAAAAAAhAQOANR54Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBAjqAGHE4LUBYLEUAEyohAAAeAAAA/QAySx5TDwAKICAgICAgAAAA/ABSdXN0RGVzawogICAgAAAAEAAgICAgICAgICAgICAgAOE='
 
-# ── Step 5: force a virtual display for headless KMS (every HDMI port) ─────────
+# ── Step 5: force a virtual display for headless KMS (reconciled, idempotent) ──
+# Default is ONE display (first HDMI port) so a real monitor on the OTHER port works
+# at its own native resolution; FORCE_ALL_HDMI=yes forces every port. We RECONCILE
+# cmdline.txt — strip the tokens we manage, then write exactly the chosen set — so
+# re-running can switch between one and all displays instead of only appending.
 CMDLINE="/boot/firmware/cmdline.txt"
 [[ -f "$CMDLINE" ]] || CMDLINE="/boot/cmdline.txt"
 conns=()
 if [[ -f "$CMDLINE" ]]; then
   if [[ -n "$HDMI_CONNECTOR" ]]; then
-    conns=("$HDMI_CONNECTOR")
+    conns=("$HDMI_CONNECTOR")                         # explicit pin wins
   else
+    detected=()
     for s in /sys/class/drm/card*-HDMI-A-*/status; do
       [[ -e "$s" ]] || continue
       c="$(basename "$(dirname "$s")")"; c="${c#card*-}"
-      conns+=("$c")
+      detected+=("$c")
     done
-  fi
-  ((${#conns[@]})) || conns=("HDMI-A-1")
-  made_backup=0
-  for c in "${conns[@]}"; do
-    if grep -q "video=${c}:" "$CMDLINE"; then
-      log "cmdline.txt already forces ${c} — leaving as-is"
+    ((${#detected[@]})) || detected=("HDMI-A-1")
+    if [[ "$FORCE_ALL_HDMI" == "yes" ]]; then
+      conns=("${detected[@]}")                         # every HDMI port → multiple displays
     else
-      if [[ "$made_backup" -eq 0 ]]; then cp -a "$CMDLINE" "${CMDLINE}.bak.rustdesk" 2>/dev/null || true; made_backup=1; fi
-      sed -i "s/[[:space:]]*$/ video=${c}:${HDMI_MODE}/" "$CMDLINE"
-      log "Appended 'video=${c}:${HDMI_MODE}' to $CMDLINE"
+      conns=("${detected[0]}")                         # default: first port only → one display
     fi
-  done
-  # Fake 1080p EDID: make a headless Pi report a real monitor so the desktop is true 16:9.
+  fi
+
+  # Back up the pristine cmdline.txt ONCE — never overwrite the original on re-runs.
+  [[ -e "${CMDLINE}.bak.rustdesk" ]] || cp -a "$CMDLINE" "${CMDLINE}.bak.rustdesk" 2>/dev/null || true
+
+  # Fake 1080p EDID blob so the forced display advertises a real 1080p monitor (true 16:9).
   if [[ "$FAKE_EDID" == "yes" ]]; then
     install -d -m 0755 /lib/firmware/edid
     printf '%s' "$EDID_B64" | base64 -d > "/lib/firmware/edid/${EDID_FILE}" || die "Failed to write fake EDID"
     chmod 0644 "/lib/firmware/edid/${EDID_FILE}"
-    if grep -q "drm.edid_firmware=" "$CMDLINE"; then
-      log "cmdline.txt already sets drm.edid_firmware — leaving as-is"
-    else
-      edid_arg="drm.edid_firmware="; sep=""
-      for c in "${conns[@]}"; do edid_arg+="${sep}${c}:edid/${EDID_FILE}"; sep=","; done
-      if [[ "$made_backup" -eq 0 ]]; then cp -a "$CMDLINE" "${CMDLINE}.bak.rustdesk" 2>/dev/null || true; made_backup=1; fi
-      sed -i "s|[[:space:]]*\$| ${edid_arg}|" "$CMDLINE"
-      log "Appended '${edid_arg}' to $CMDLINE (fake 1080p EDID)"
-    fi
+  fi
+
+  # Strip the tokens we manage, then append exactly the desired set (stays one line).
+  sed -i 's/ video=HDMI-A-[0-9]*:[^ ]*//g; s/ drm.edid_firmware=[^ ]*//g' "$CMDLINE"
+  add=""
+  for c in "${conns[@]}"; do add+=" video=${c}:${HDMI_MODE}"; done
+  if [[ "$FAKE_EDID" == "yes" ]]; then
+    edid_arg="drm.edid_firmware="; sep=""
+    for c in "${conns[@]}"; do edid_arg+="${sep}${c}:edid/${EDID_FILE}"; sep=","; done
+    add+=" ${edid_arg}"
+  fi
+  sed -i "s|[[:space:]]*\$|${add}|" "$CMDLINE"
+  if [[ "$FAKE_EDID" == "yes" ]]; then
+    log "Forced display(s): ${conns[*]} @ ${HDMI_MODE} + fake 1080p EDID  (in $CMDLINE)"
+  else
+    log "Forced display(s): ${conns[*]} @ ${HDMI_MODE}  (in $CMDLINE)"
   fi
 else
   warn "Could not find cmdline.txt — skipping headless display forcing. Set 'video=' manually."
@@ -291,8 +356,7 @@ fi
 # config (a random public rs-*.rustdesk.com rendezvous) and overwrite RustDesk2.toml,
 # wiping the custom server we seed here — that's the "No such file or directory
 # (os error 2)" you'd see. So: stop service → write file → start service → only then
-# touch the CLI.
-ROOT_CFG_DIR="/root/.config/rustdesk"
+# touch the CLI.  (ROOT_CFG_DIR / RD1 / RD2 were defined up in the gather section.)
 write_server_config() {
   install -d -m 0700 "$ROOT_CFG_DIR"
   {
@@ -339,18 +403,23 @@ done
 sleep 2   # give the service a moment to open its IPC socket
 
 # Set the permanent password against the RUNNING service, retrying until it sticks.
-pw_set=no
-for _ in $(seq 1 10); do
-  timeout 15 rustdesk --password "$RUSTDESK_PASSWORD" >/dev/null 2>&1 || true
-  if grep -q "^password = '.\+'" "$ROOT_CFG_DIR/RustDesk.toml" 2>/dev/null; then
-    pw_set=yes; break
-  fi
-  sleep 1
-done
-if [[ "$pw_set" == "yes" ]]; then
-  log "Permanent password set."
+# (Skipped when reusing an already-configured box — the existing password is kept.)
+if [[ "$KEEP_PASSWORD" == "yes" ]]; then
+  log "Keeping existing permanent password (unchanged)."
 else
-  warn "Could not confirm the permanent password was stored. After reboot, set it with: sudo rustdesk --password '<your-password>'"
+  pw_set=no
+  for _ in $(seq 1 10); do
+    timeout 15 rustdesk --password "$RUSTDESK_PASSWORD" >/dev/null 2>&1 || true
+    if grep -q "^password = '.\+'" "$ROOT_CFG_DIR/RustDesk.toml" 2>/dev/null; then
+      pw_set=yes; break
+    fi
+    sleep 1
+  done
+  if [[ "$pw_set" == "yes" ]]; then
+    log "Permanent password set."
+  else
+    warn "Could not confirm the permanent password was stored. After reboot, set it with: sudo rustdesk --password '<your-password>'"
+  fi
 fi
 
 RD_ID="$(timeout 20 rustdesk --get-id 2>/dev/null || true)"
@@ -365,15 +434,18 @@ if ! grep -q "custom-rendezvous-server" "$ROOT_CFG_DIR/RustDesk2.toml" 2>/dev/nu
   systemctl start rustdesk 2>/dev/null || true
 fi
 
+pw_show="${RUSTDESK_PASSWORD}"
+[[ "$KEEP_PASSWORD" == "yes" ]] && pw_show="(unchanged — existing kept)"
+if [[ "${#conns[@]}" -gt 1 ]]; then disp_show="${#conns[@]} displays — ${conns[*]}"; else disp_show="1 display — ${conns[*]} (other HDMI port free for a native monitor)"; fi
 cat <<EOF
 
 ────────────────────────────────────────────────────────────────────
  RustDesk setup complete.
-   RustDesk ID ........ ${RD_ID:-<run: sudo rustdesk --get-id>}
-   Password ........... ${RUSTDESK_PASSWORD}
+   RustDesk ID ........ ${RD_ID:-<run: sudo rustdesk --get-id>}  (stays the same across re-runs)
+   Password ........... ${pw_show}
    Server ............. ${RENDEZVOUS_HOST} (relay: ${RELAY_HOST})
    Auto-login user .... ${PRIMARY_USER}  (Raspberry Pi desktop, X11)
-   Headless display ... ${HDMI_MODE} on: ${conns[*]}
+   Headless display ... ${HDMI_MODE}, ${disp_show}
    Fake 1080p EDID .... ${FAKE_EDID}  (/lib/firmware/edid/${EDID_FILE})
    HW video decode .... ${ENABLE_VAAPI} (experimental — VAAPI)
 ────────────────────────────────────────────────────────────────────
