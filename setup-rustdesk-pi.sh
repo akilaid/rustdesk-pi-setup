@@ -42,11 +42,12 @@ RUSTDESK_PASSWORD="${RUSTDESK_PASSWORD:-}"      # permanent unattended-access pa
 API_SERVER="${API_SERVER:-}"                    # optional, e.g. https://host ; leave empty if unused
 
 # Headless virtual display
-HDMI_MODE="${HDMI_MODE:-1920x1080@60D}"         # trailing 'D' forces the connector ON with no monitor
+RESOLUTION="${RESOLUTION:-}"                     # ''=ask; 1080p | 720p | 1440p(=2k) | 2160p(=4k) — sets the virtual display mode + EDID
+HDMI_MODE="${HDMI_MODE:-}"                       # advanced override, e.g. 1920x1080@60D ('D' forces connector on); empty = from RESOLUTION
 HDMI_CONNECTOR="${HDMI_CONNECTOR:-}"            # optional: pin ONE specific connector, e.g. HDMI-A-1 (overrides the prompt)
 FORCE_ALL_HDMI="${FORCE_ALL_HDMI:-}"            # ''=ask (default 1 display), yes=force ALL HDMI ports, no=single (first port)
-FAKE_EDID="${FAKE_EDID:-yes}"                   # write a fake 1080p EDID so a headless Pi boots at true 16:9
-EDID_FILE="${EDID_FILE:-rustdesk-1080p.bin}"    # EDID filename under /lib/firmware/edid/ (point at a captured one to override)
+FAKE_EDID="${FAKE_EDID:-yes}"                   # write a fake EDID so a headless Pi boots at the chosen resolution (true 16:9)
+EDID_FILE="${EDID_FILE:-}"                       # advanced override of the EDID filename under /lib/firmware/edid/; empty = from RESOLUTION
 
 # Behaviour toggles
 PURGE_SCREENSAVERS="${PURGE_SCREENSAVERS:-yes}" # purge light-locker + xfce4-screensaver if present
@@ -54,6 +55,15 @@ ADD_ORDERING_DROPIN="${ADD_ORDERING_DROPIN:-yes}" # start rustdesk.service after
 ENABLE_VAAPI="${ENABLE_VAAPI:-}"                # experimental HW video decode (VAAPI); empty = ask, or set yes/no
 AUTO_REBOOT="${AUTO_REBOOT:-ask}"               # yes | no | ask
 # ──────────────────────────────────────────────────────────────────────────────
+
+# Pre-validated 128-byte EDID 1.3 blobs, one per offered resolution. Each advertises
+# the target mode as its preferred Detailed Timing Descriptor (60 Hz, checksum OK), so
+# a fully headless Pi comes up at that resolution (no monitor, no "square screen").
+# 1080p is the field-proven blob; 720p/1440p/2160p generated the same way.
+EDID_1080P='AP///////wAx2AAAAAAAAAAhAQOANR54Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBAjqAGHE4LUBYLEUAEyohAAAeAAAA/QAySx5TDwAKICAgICAgAAAA/ABSdXN0RGVzawogICAgAAAAEAAgICAgICAgICAgICAgAOE='
+EDID_720P='AP///////wAx2AAAAAAAAAAhAQOAPCJ4Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBAR0AclHQHiBuKFUAVVAhAAAeAAAA/QAySx4yCAAKICAgICAgAAAA/ABSRC03MjBwCiAgICAgAAAAEAAgICAgICAgICAgICAgALg='
+EDID_1440P='AP///////wAx2AAAAAAAAAAhAQOAPCJ4Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBVl4AoKCgKVAwIDUAVVAhAAAeAAAA/QAySx5fGQAKICAgICAgAAAA/ABSRC0xNDQwcAogICAgAAAAEAAgICAgICAgICAgICAgALI='
+EDID_2160P='AP///////wAx2AAAAAAAAAAhAQOAPCJ4Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBCOgAMPJwWoCwWIoAVVAhAAAeAAAA/QAySx6MPAAKICAgICAgAAAA/ABSRC0yMTYwcAogICAgAAAAEAAgICAgICAgICAgICAgAAY='
 
 log()  { printf '\n\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
@@ -154,6 +164,34 @@ EOF
   fi
 fi
 [[ "$FORCE_ALL_HDMI" =~ ^([Yy]([Ee][Ss])?|[Aa][Ll][Ll]|[Bb][Oo][Tt][Hh]|[Tt][Rr][Uu][Ee])$ ]] && FORCE_ALL_HDMI=yes || FORCE_ALL_HDMI=no
+
+# Which resolution the virtual (and any forced-port) display runs at.
+if [[ -z "$RESOLUTION" ]]; then
+  if [[ -e /dev/tty ]]; then
+    cat <<'EOF'
+
+Pick the resolution for the virtual display RustDesk captures:
+  1) 1080p  - 1920x1080  (Full HD, recommended)
+  2) 720p   - 1280x720   (lighter; good for low bandwidth)
+  3) 2K     - 2560x1440  (QHD)
+  4) 4K     - 3840x2160  (UHD; needs a Pi 4/5 and more bandwidth)
+EOF
+    read -r -p "Resolution [1-4] (default 1): " rr <"$TTY" || rr=""
+    case "$rr" in 2) RESOLUTION=720p ;; 3) RESOLUTION=1440p ;; 4) RESOLUTION=2160p ;; *) RESOLUTION=1080p ;; esac
+  else
+    RESOLUTION=1080p
+  fi
+fi
+# Map the choice (or env value) → mode + EDID blob + EDID filename. Advanced overrides
+# (HDMI_MODE / EDID_FILE set via env) win and are left untouched.
+case "${RESOLUTION,,}" in
+  720p|720)         res_mode="1280x720@60";  ACTIVE_EDID="$EDID_720P";  res_file="rustdesk-720p.bin";  RESOLUTION=720p ;;
+  1440p|1440|2k|qhd) res_mode="2560x1440@60"; ACTIVE_EDID="$EDID_1440P"; res_file="rustdesk-1440p.bin"; RESOLUTION=1440p ;;
+  2160p|2160|4k|uhd) res_mode="3840x2160@60"; ACTIVE_EDID="$EDID_2160P"; res_file="rustdesk-2160p.bin"; RESOLUTION=2160p ;;
+  *)                res_mode="1920x1080@60"; ACTIVE_EDID="$EDID_1080P"; res_file="rustdesk-1080p.bin"; RESOLUTION=1080p ;;
+esac
+[[ -n "$HDMI_MODE" ]] || HDMI_MODE="${res_mode}D"   # 'D' forces the connector on with no monitor
+[[ -n "$EDID_FILE" ]] || EDID_FILE="$res_file"
 
 # Optional, EXPERIMENTAL hardware video decode (VAAPI) — default skip.
 if [[ -z "$ENABLE_VAAPI" ]]; then
@@ -289,11 +327,6 @@ log "rustdesk binary: $(command -v rustdesk)  ($(rustdesk --version 2>/dev/null 
 systemctl list-unit-files | grep -q '^rustdesk\.service' || \
   warn "rustdesk.service unit not found — if you installed via Flatpak/AppImage, switch to the .deb."
 
-# Pre-validated generic 1080p EDID (128-byte EDID 1.3; preferred DTD = 1920x1080@60,
-# 148.5 MHz; checksum OK). Decoded to /lib/firmware/edid/ so a headless Pi advertises a
-# real 1080p monitor and the desktop never falls back to a "square" 4:3 mode.
-EDID_B64='AP///////wAx2AAAAAAAAAAhAQOANR54Cu6Ro1RMmSYPUFQAAAABAQEBAQEBAQEBAQEBAQEBAjqAGHE4LUBYLEUAEyohAAAeAAAA/QAySx5TDwAKICAgICAgAAAA/ABSdXN0RGVzawogICAgAAAAEAAgICAgICAgICAgICAgAOE='
-
 # ── Step 5: force a virtual display for headless KMS (reconciled, idempotent) ──
 # Default is ONE display (first HDMI port) so a real monitor on the OTHER port works
 # at its own native resolution; FORCE_ALL_HDMI=yes forces every port. We RECONCILE
@@ -323,10 +356,11 @@ if [[ -f "$CMDLINE" ]]; then
   # Back up the pristine cmdline.txt ONCE — never overwrite the original on re-runs.
   [[ -e "${CMDLINE}.bak.rustdesk" ]] || cp -a "$CMDLINE" "${CMDLINE}.bak.rustdesk" 2>/dev/null || true
 
-  # Fake 1080p EDID blob so the forced display advertises a real 1080p monitor (true 16:9).
+  # Fake EDID blob (matched to the chosen RESOLUTION) so the forced display advertises a
+  # real monitor at that mode and the desktop never falls back to a "square" 4:3 default.
   if [[ "$FAKE_EDID" == "yes" ]]; then
     install -d -m 0755 /lib/firmware/edid
-    printf '%s' "$EDID_B64" | base64 -d > "/lib/firmware/edid/${EDID_FILE}" || die "Failed to write fake EDID"
+    printf '%s' "$ACTIVE_EDID" | base64 -d > "/lib/firmware/edid/${EDID_FILE}" || die "Failed to write fake EDID"
     chmod 0644 "/lib/firmware/edid/${EDID_FILE}"
   fi
 
@@ -445,8 +479,9 @@ cat <<EOF
    Password ........... ${pw_show}
    Server ............. ${RENDEZVOUS_HOST} (relay: ${RELAY_HOST})
    Auto-login user .... ${PRIMARY_USER}  (Raspberry Pi desktop, X11)
-   Headless display ... ${HDMI_MODE}, ${disp_show}
-   Fake 1080p EDID .... ${FAKE_EDID}  (/lib/firmware/edid/${EDID_FILE})
+   Resolution ......... ${RESOLUTION}  (${HDMI_MODE})
+   Headless display ... ${disp_show}
+   Fake EDID .......... ${FAKE_EDID}  (/lib/firmware/edid/${EDID_FILE})
    HW video decode .... ${ENABLE_VAAPI} (experimental — VAAPI)
 ────────────────────────────────────────────────────────────────────
  A REBOOT is required to apply the display, auto-login and X11 switch.

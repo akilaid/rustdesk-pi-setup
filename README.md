@@ -63,6 +63,7 @@ Server public key (long base64 string):            EXAMPLEpublicKeyBase64==
 Permanent access password (blank = auto-generate): ••••••••
 Confirm password:                                  ••••••••
 How many displays to force? [1/all] (default 1):   ⏎   (one display; HDMI-A-2 stays free)
+Resolution [1-4] (default 1):                      ⏎   (1=1080p, 2=720p, 3=2K, 4=4K)
 ```
 You really only need the **server IP**, the **key**, and a **password** (leave the
 password blank to auto-generate a strong one — it's printed at the end).
@@ -81,7 +82,7 @@ key, **and** password (no re-typing). Your **RustDesk ID never changes** across 
 | 2 | **LightDM auto-login** of your user into the X11 session on `:0`. |
 | 3 | Disables **screen blanking / DPMS** so the remote view never blacks out. |
 | 4 | Installs the official **RustDesk `.deb`** matched to the CPU (`arm64`→aarch64, `armhf`→armv7) if missing. |
-| 5 | Forces a **virtual HDMI display** via `cmdline.txt`, **plus a fake 1080p EDID** in `/lib/firmware/edid/` so the desktop comes up at true **1920×1080 (16:9)** with no monitor — no "square screen," no plug-a-monitor-in-then-unplug trick. **Defaults to one display (HDMI-A-1)**, leaving HDMI-A-2 free for a real monitor at its native resolution; choose `all` (or `FORCE_ALL_HDMI=yes`) to force every port. |
+| 5 | Forces a **virtual HDMI display** via `cmdline.txt`, **plus a fake EDID** in `/lib/firmware/edid/` matched to your chosen **resolution** (`1080p` / `720p` / `2K` / `4K`), so the desktop comes up at true 16:9 with no monitor — no "square screen," no plug-a-monitor-in-then-unplug trick. **Defaults to one display (HDMI-A-1)**, leaving HDMI-A-2 free for a real monitor at its native resolution; choose `all` (or `FORCE_ALL_HDMI=yes`) to force every port. |
 | 6 | Writes the **self-hosted server** config (rendezvous / relay / key) for the root service. |
 | 7 | Sets the **permanent unattended password** and enables the service on boot. |
 | 8 | Offers to **reboot** (required to apply the display, auto-login, and X11 switch). |
@@ -124,11 +125,12 @@ sudo RENDEZVOUS_HOST=203.0.113.10 \
 | `SERVER_KEY` | *(prompted, required)* | Server public key |
 | `RUSTDESK_PASSWORD` | *(prompted; blank = auto-generate)* | Permanent access password |
 | `API_SERVER` | *(empty)* | Optional, e.g. `https://host` (web console / address book only) |
-| `HDMI_MODE` | `1920x1080@60D` | Forced virtual mode (trailing `D` = force connector on) |
+| `RESOLUTION` | *(empty = ask; default `1080p`)* | Virtual display resolution: `1080p` / `720p` / `1440p` (=`2k`) / `2160p` (=`4k`). Sets the mode **and** the matching fake EDID |
+| `HDMI_MODE` | *(from `RESOLUTION`)* | **Advanced** override of the forced mode, e.g. `1920x1080@60D` (trailing `D` = force connector on) |
 | `HDMI_CONNECTOR` | *(empty)* | Pin ONE specific connector, e.g. `HDMI-A-1` (overrides the display prompt) |
 | `FORCE_ALL_HDMI` | *(empty = ask; default 1 display)* | `yes` = force every HDMI port (multiple displays); `no` = single (first port) |
-| `FAKE_EDID` | `yes` | Write a fake 1080p EDID so a headless Pi boots at true 16:9 (fixes the "square screen") |
-| `EDID_FILE` | `rustdesk-1080p.bin` | EDID filename under `/lib/firmware/edid/`; point at a captured EDID to override |
+| `FAKE_EDID` | `yes` | Write a fake EDID (matched to `RESOLUTION`) so a headless Pi boots at that mode (fixes the "square screen") |
+| `EDID_FILE` | *(from `RESOLUTION`)* | **Advanced** override of the EDID filename under `/lib/firmware/edid/`; point at a captured EDID |
 | `PURGE_SCREENSAVERS` | `yes` | Remove `light-locker` / `xfce4-screensaver` if present |
 | `ADD_ORDERING_DROPIN` | `yes` | Start the service after the display manager |
 | `AUTO_REBOOT` | `ask` | `yes` / `no` / `ask` |
